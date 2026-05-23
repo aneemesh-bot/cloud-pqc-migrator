@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloud-pqc-migrator"
+version = "0.1.0"
+description = "Post-Quantum Cryptography Migration Engine for AWS and GCP"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1.8",
+    "rich>=13.9.0",
+    "pydantic>=2.10.0",
+    "anthropic>=0.57.0",
+    "boto3>=1.35.0",
+    "google-auth>=2.38.0",
+    "python-dateutil>=2.9.0",
+]
+
+[project.scripts]
+cloud-pqc-migrator = "cloud_pqc_migrator.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cloud_pqc_migrator*"]
