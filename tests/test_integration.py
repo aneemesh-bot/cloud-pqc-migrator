@@ -45,22 +45,15 @@ def test_aws_discover_triage_pipeline(mock_creds):
     assert any(g.priority.value <= 2 for g in gaps), "Mock TLS 1.2 ALB should produce CRITICAL or HIGH gap"
 
 
-# ── Test 2: LLM remediation generation with mocked Anthropic client ───────────
+# ── Test 2: LLM remediation generation with a mocked backend ──────────────────
 
-def test_remediation_generation_with_mock_anthropic(mocker, sample_gap, known_remediation_json):
+def test_remediation_generation_with_mock_backend(sample_gap, known_remediation_json):
     """generate_remediation() wraps a valid LLM JSON response into a Remediation."""
-    import cloud_pqc_migrator.remediation.llm_pipeline as pipeline
-    pipeline._client = None  # reset module-level singleton
-
-    mock_message = MagicMock()
-    mock_message.content = [MagicMock(text=known_remediation_json)]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_message
-
-    mocker.patch.object(pipeline, "_get_client", return_value=mock_client)
+    backend = MagicMock()
+    backend.complete.return_value = known_remediation_json
 
     from cloud_pqc_migrator.remediation import generate_remediation
-    remediation = generate_remediation(sample_gap)
+    remediation = generate_remediation(sample_gap, backend=backend)
 
     assert remediation.cli_command.startswith("aws elbv2 modify-listener")
     assert remediation.rollback_command.startswith("aws elbv2 modify-listener")

@@ -74,7 +74,7 @@ def display_approval_panel(
 
     if remediation.llm_reasoning:
         table.add_section()
-        table.add_row("Claude Reasoning", f"[dim italic]{remediation.llm_reasoning}[/]")
+        table.add_row("LLM Reasoning", f"[dim italic]{remediation.llm_reasoning}[/]")
 
     panel = Panel(
         table,

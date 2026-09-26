@@ -2,7 +2,7 @@
 
 An agentic Post-Quantum Cryptography (PQC) Migration Engine for AWS and GCP cloud infrastructure.
 
-The tool autonomously discovers every cryptographically-bounded resource in your cloud environment, evaluates it against the finalized NIST PQC standards (FIPS 203/204/205) and CNSA 2.0 mandates, generates precise CLI remediation commands via the Claude AI API, and enforces a strict human-in-the-loop approval gate before any change is executed.
+The tool autonomously discovers every cryptographically-bounded resource in your cloud environment, evaluates it against the finalized NIST PQC standards (FIPS 203/204/205) and CNSA 2.0 mandates, generates precise CLI remediation commands via an LLM of your choice (Anthropic Claude by default, or local models served through Ollama), and enforces a strict human-in-the-loop approval gate before any change is executed.
 
 ---
 
@@ -46,7 +46,7 @@ TLS 1.3 is enforced as a hard prerequisite across all edge resources because it 
                                   │
                                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  4. Just-in-Time Remediator (Claude AI)                         │
+│  4. Just-in-Time Remediator (Claude or Ollama)                  │
 │     Generates target CLI commands + Terraform IaC patches       │
 └─────────────────────────────────┬───────────────────────────────┘
                                   │
@@ -62,7 +62,9 @@ TLS 1.3 is enforced as a hard prerequisite across all edge resources because it 
 ## Requirements
 
 - Python 3.11 or newer
-- An [Anthropic API key](https://console.anthropic.com/) (for remediation generation)
+- For remediation generation, one of:
+  - an [Anthropic API key](https://console.anthropic.com/) (default backend), or
+  - a running [Ollama](https://ollama.com/) server with at least one pulled model (fully local, no API key)
 - For live scans: the [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) and/or [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) installed and on `$PATH`
 - For dry-run mode: no cloud tools or credentials required
 
@@ -92,7 +94,7 @@ cloud-pqc-migrator --version
 
 ### Dry-run mode (no cloud access required)
 
-The fastest way to see the tool in action. It uses realistic mock cloud data for discovery and the real Claude API for remediation generation:
+The fastest way to see the tool in action. It uses realistic mock cloud data for discovery and the real Claude API (or a local Ollama model) for remediation generation:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -102,6 +104,9 @@ cloud-pqc-migrator scan --provider aws --dry-run
 
 # Stop before the LLM step (no API key needed)
 cloud-pqc-migrator scan --provider aws --dry-run --skip-execution
+
+# Use a local Ollama model instead of the Anthropic API
+cloud-pqc-migrator scan --provider aws --dry-run --llm-provider ollama --model qwen2.5-coder:14b
 ```
 
 ### Live AWS scan
@@ -162,6 +167,13 @@ Options:
   --log-level [DEBUG|INFO|WARNING|ERROR]
                             Python logging level for the audit trail.  [default: WARNING]
   --log-file PATH           Write the audit log to this file (default: disabled).
+  --llm-provider [anthropic|ollama]
+                            LLM backend for remediation generation.  [default: anthropic]
+                            (env: PQC_LLM_PROVIDER)
+  --model NAME              Anthropic model ID or Ollama model tag.
+                            Anthropic default: claude-opus-5-5. Required for Ollama.
+                            (env: PQC_LLM_MODEL)
+  --ollama-host URL         Ollama server URL (default: $OLLAMA_HOST or http://localhost:11434).
 ```
 
 **Example — export CBoM for later use:**
@@ -217,10 +229,36 @@ cloud-pqc-migrator remediate-only CBOM_FILE [OPTIONS]
 
 Options:
   --max-remediations N      Cap the number of LLM calls.
+  --llm-provider [anthropic|ollama]
+                            LLM backend for remediation generation.  [default: anthropic]
+  --model NAME              Anthropic model ID or Ollama model tag.
+  --ollama-host URL         Ollama server URL.
 ```
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-... cloud-pqc-migrator remediate-only cbom-2026-05.json
+
+# Or fully offline with Ollama
+cloud-pqc-migrator remediate-only cbom-2026-05.json --llm-provider ollama --model llama3.1
+```
+
+---
+
+### `models`
+
+List the models you can pass to `--model` for a backend. For Anthropic, the default model is marked.
+
+```
+cloud-pqc-migrator models [OPTIONS]
+
+Options:
+  --llm-provider [anthropic|ollama]   [default: anthropic]
+  --ollama-host URL                   Ollama server URL.
+```
+
+```bash
+cloud-pqc-migrator models                        # Anthropic (needs ANTHROPIC_API_KEY)
+cloud-pqc-migrator models --llm-provider ollama  # models pulled into your local Ollama
 ```
 
 ---
@@ -358,7 +396,7 @@ Every remediation proposal is presented in a Rich terminal panel before anything
 │  Rollback Cmd   │  aws elbv2 modify-listener --listener-arn arn:... \        │
 │                 │    --ssl-policy ELBSecurityPolicy-2016-08                  │
 │ ─────────────── ┼──────────────────────────────────────────────────────── │
-│  Claude's Notes │  Upgrades to ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06     │
+│  LLM Reasoning  │  Upgrades to ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06     │
 │                 │  which enables TLS 1.3 and hybrid ML-KEM-768 per FIPS 203  │
 ╰───────────────────────────────────────────────────────────────────────────────╯
 
@@ -408,17 +446,46 @@ The Cryptographic Bill of Materials produced by discovery is a JSON file you can
 
 ---
 
-## Claude API and Prompt Caching
+## LLM Backends & Models
 
-Module 4 uses the Anthropic `claude-sonnet-4-6` model. The large PQC standards system prompt (~600 tokens) is sent with `cache_control: {"type": "ephemeral"}`. Because all gaps in a session are processed sequentially within the 5-minute cache TTL, every call after the first benefits from a cache hit — reducing input token cost by roughly 90% for large environments.
+Remediation generation (Module 4) is model-agnostic. Pick the backend with `--llm-provider` and the model with `--model`. You can also set them with the `PQC_LLM_PROVIDER` and `PQC_LLM_MODEL` environment variables. Before any gap is processed, the tool checks that the backend is reachable and the model exists, so a typo or a missing model fails fast.
 
-Set your API key before running:
+Run `cloud-pqc-migrator models [--llm-provider ollama]` to see which models are available.
+
+### Anthropic (default)
+
+With no `--model`, the tool uses Anthropic's current recommended model, **`claude-opus-5-5`**. It's pinned in `cloud_pqc_migrator/remediation/llm_backends.py` as `DEFAULT_ANTHROPIC_MODEL` so runs are reproducible. To use any other Anthropic model, pass its ID:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+
+cloud-pqc-migrator scan --provider aws                                # claude-opus-5-5
+cloud-pqc-migrator scan --provider aws --model claude-sonnet-5        # cheaper / faster
+cloud-pqc-migrator scan --provider aws --model claude-haiku-4-5-20251001
 ```
 
-Use `--max-remediations N` to cap API calls in very large environments while you assess the first N critical findings.
+The PQC standards system prompt is sent with `cache_control: {"type": "ephemeral"}`. When the prompt is long enough to be cached by the selected model, gaps processed within the cache TTL reuse it. This cuts input token cost for large environments.
+
+### Ollama (local models)
+
+Ollama runs models entirely on your machine, so no infrastructure metadata leaves it and no API key is needed:
+
+```bash
+ollama serve &                     # if not already running
+ollama pull qwen2.5-coder:14b
+
+cloud-pqc-migrator scan --provider aws --llm-provider ollama --model qwen2.5-coder:14b
+
+# Remote Ollama server
+cloud-pqc-migrator scan --provider aws --llm-provider ollama --model llama3.1 \
+  --ollama-host http://gpu-box:11434   # or export OLLAMA_HOST=gpu-box:11434
+```
+
+Requests use Ollama's JSON mode (`format: "json"`) with temperature 0. `--model` is required for Ollama. Prompt caching applies to Anthropic only.
+
+> **Note:** Smaller local models fail the output contract more often. Every response still goes through the same validator (only `aws`/`gcloud` prefixes, no shell metacharacters) and one automatic correction retry. Nothing unvalidated ever reaches the approval gate. Code-tuned models of 7B+ parameters give the best results.
+
+Use `--max-remediations N` to cap LLM calls in very large environments while you assess the first N critical findings.
 
 ---
 
@@ -477,7 +544,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-All 32 tests run without cloud credentials or an Anthropic API key. The suite includes 4 integration tests that exercise the full discover→triage→remediate→execute pipeline using mock data and a mocked Anthropic client.
+All 50 tests run without cloud credentials, an Anthropic API key, or an Ollama server. The suite includes 4 integration tests that exercise the full discover→triage→remediate→execute pipeline using mock data and a mocked LLM backend, plus offline tests for the Anthropic and Ollama backends.
 
 ---
 
@@ -491,11 +558,11 @@ cloud-pqc-migrator/
 │   ├── auth/                    # Ephemeral credential providers
 │   ├── discovery/               # Cloud CLI executor + AWS/GCP discovery steps
 │   ├── triage/                  # PQC rule engine + timeline calculator
-│   ├── remediation/             # Claude API pipeline + output validator
+│   ├── remediation/             # Pluggable LLM backends (Anthropic, Ollama) + output validator
 │   ├── execution/               # Approval gate + health check + rollback
 │   ├── models/                  # Pydantic data models (CBoM, Gap, Remediation)
 │   └── ui/                      # Rich terminal panels and progress bars
-├── tests/                       # 32 tests (unit + integration, no cloud/API needed)
+├── tests/                       # 50 tests (unit + integration, no cloud/API needed)
 ├── .github/workflows/ci.yml     # GitHub Actions — lint, typecheck, test (Py 3.11 + 3.12)
 ├── pyproject.toml
 └── requirements.txt

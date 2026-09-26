@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -9,7 +8,37 @@ import click
 from rich.table import Table
 
 from cloud_pqc_migrator.models import CBoM, CloudProvider
+from cloud_pqc_migrator.remediation.llm_backends import DEFAULT_ANTHROPIC_MODEL, PROVIDERS
 from cloud_pqc_migrator.ui.console import console
+
+
+def _llm_options(f):
+    """Shared --llm-provider / --model / --ollama-host options."""
+    f = click.option(
+        "--ollama-host",
+        default=None,
+        metavar="URL",
+        help="Ollama server URL (default: $OLLAMA_HOST or http://localhost:11434).",
+    )(f)
+    f = click.option(
+        "--model",
+        default=None,
+        envvar="PQC_LLM_MODEL",
+        metavar="NAME",
+        help=(
+            "Model to use for remediation: any Anthropic model ID or Ollama model tag. "
+            f"Anthropic default: {DEFAULT_ANTHROPIC_MODEL}. Required for Ollama."
+        ),
+    )(f)
+    f = click.option(
+        "--llm-provider",
+        type=click.Choice(PROVIDERS),
+        default="anthropic",
+        show_default=True,
+        envvar="PQC_LLM_PROVIDER",
+        help="LLM backend used to generate remediations.",
+    )(f)
+    return f
 
 
 @click.group()
@@ -84,6 +113,7 @@ def cli() -> None:
     metavar="PATH",
     help="Write audit log to this file (default: disabled).",
 )
+@_llm_options
 def scan(
     provider: str,
     dry_run: bool,
@@ -94,6 +124,9 @@ def scan(
     max_remediations: int | None,
     log_level: str,
     log_file: str | None,
+    llm_provider: str,
+    model: str | None,
+    ollama_host: str | None,
 ) -> None:
     """Full scan: authenticate → discover → triage → remediate → approve → execute."""
     from cloud_pqc_migrator.logger import configure_logging, log
@@ -109,25 +142,30 @@ def scan(
     cloud_provider = CloudProvider(provider)
     log.info("scan_start provider=%s dry_run=%s", provider, dry_run)
 
-    # ── API key pre-flight check ────────────────────────────────────────────
-    has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
-    if not has_api_key:
-        if dry_run:
-            console.print(
-                "[bold yellow]Warning:[/] ANTHROPIC_API_KEY is not set. "
-                "Remediation generation (Step 4) will be skipped.\n"
-                "Set the variable and re-run to generate AI remediation proposals."
-            )
-            skip_execution = True
+    # ── LLM backend pre-flight check ────────────────────────────────────────
+    backend = None
+    if not skip_execution:
+        from cloud_pqc_migrator.remediation import LLMBackendError, get_backend
+        try:
+            backend = get_backend(llm_provider, model, ollama_host)
+            backend.preflight()
+        except LLMBackendError as exc:
+            if dry_run:
+                console.print(
+                    f"[bold yellow]Warning:[/] {exc}\n"
+                    "Remediation generation (Step 4) will be skipped.\n"
+                    "Fix the LLM backend configuration and re-run to generate remediation proposals."
+                )
+                skip_execution = True
+            else:
+                console.print(
+                    f"[bold red]Error:[/] {exc}\n\n"
+                    "To run discovery and triage without the LLM step, add --skip-execution.\n"
+                    "To test with mock cloud data, add --dry-run --skip-execution."
+                )
+                sys.exit(1)
         else:
-            console.print(
-                "[bold red]Error:[/] ANTHROPIC_API_KEY is not set.\n"
-                "The remediation engine requires an Anthropic API key.\n\n"
-                "  export ANTHROPIC_API_KEY=sk-ant-...\n\n"
-                "To run discovery and triage without the LLM step, add --skip-execution.\n"
-                "To test with mock cloud data, add --dry-run --skip-execution."
-            )
-            sys.exit(1)
+            log.info("llm_backend provider=%s model=%s", backend.name, backend.model)
 
     # ── Step 1: Authentication ──────────────────────────────────────────────
     console.rule(f"[bold blue]Step 1 — {provider.upper()} Authentication[/]")
@@ -188,7 +226,8 @@ def scan(
         return
 
     # ── Step 4: Remediation Generation ─────────────────────────────────────
-    console.rule("[bold blue]Step 4 — Remediation Generation (Claude AI)[/]")
+    assert backend is not None
+    console.rule(f"[bold blue]Step 4 — Remediation Generation ({backend.name}: {backend.model})[/]")
     gaps_to_remediate = gaps[:max_remediations] if max_remediations else gaps
 
     if len(gaps_to_remediate) < len(gaps):
@@ -203,11 +242,13 @@ def scan(
         )
 
     remediations: list = []
-    with remediation_progress(len(gaps_to_remediate)) as (progress, task):
+    with remediation_progress(len(gaps_to_remediate), label=backend.name) as (progress, task):
         def on_remediation(done: int, total: int) -> None:
             progress.update(task, completed=done)
 
-        remediations = generate_all_remediations(gaps_to_remediate, progress_callback=on_remediation)
+        remediations = generate_all_remediations(
+            gaps_to_remediate, progress_callback=on_remediation, backend=backend
+        )
 
     # ── Step 5: Approval Gate ───────────────────────────────────────────────
     console.rule("[bold blue]Step 5 — Human-in-the-Loop Approval Gate[/]")
@@ -242,11 +283,25 @@ def triage_only(cbom_file: str, t_proj_months: int) -> None:
     metavar="N",
     help="Cap the number of gaps sent to the LLM.",
 )
-def remediate_only(cbom_file: str, max_remediations: int | None) -> None:
+@_llm_options
+def remediate_only(
+    cbom_file: str,
+    max_remediations: int | None,
+    llm_provider: str,
+    model: str | None,
+    ollama_host: str | None,
+) -> None:
     """Generate remediations from an existing CBoM without executing them."""
     from cloud_pqc_migrator.triage import evaluate
-    from cloud_pqc_migrator.remediation import generate_all_remediations
+    from cloud_pqc_migrator.remediation import LLMBackendError, generate_all_remediations, get_backend
     from cloud_pqc_migrator.ui.progress import remediation_progress
+
+    try:
+        backend = get_backend(llm_provider, model, ollama_host)
+        backend.preflight()
+    except LLMBackendError as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        sys.exit(1)
 
     cbom_path = Path(cbom_file)
     cbom = CBoM.model_validate_json(cbom_path.read_text())
@@ -259,15 +314,59 @@ def remediate_only(cbom_file: str, max_remediations: int | None) -> None:
 
     gaps_to_remediate = gaps[:max_remediations] if max_remediations else gaps
     remediations = []
-    with remediation_progress(len(gaps_to_remediate)) as (progress, task):
+    console.print(f"Using [bold]{backend.name}[/] model [bold]{backend.model}[/]")
+    with remediation_progress(len(gaps_to_remediate), label=backend.name) as (progress, task):
         def on_r(done: int, total: int) -> None:
             progress.update(task, completed=done)
-        remediations = generate_all_remediations(gaps_to_remediate, progress_callback=on_r)
+        remediations = generate_all_remediations(
+            gaps_to_remediate, progress_callback=on_r, backend=backend
+        )
 
     console.rule("[bold]Generated Remediations[/]")
     for i, r in enumerate(remediations, 1):
         from cloud_pqc_migrator.ui.panels import display_approval_panel
         display_approval_panel(r, index=i, total=len(remediations), dry_run=True)
+
+
+@cli.command("models")
+@click.option(
+    "--llm-provider",
+    type=click.Choice(PROVIDERS),
+    default="anthropic",
+    show_default=True,
+    envvar="PQC_LLM_PROVIDER",
+    help="LLM backend whose models to list.",
+)
+@click.option(
+    "--ollama-host",
+    default=None,
+    metavar="URL",
+    help="Ollama server URL (default: $OLLAMA_HOST or http://localhost:11434).",
+)
+def models(llm_provider: str, ollama_host: str | None) -> None:
+    """List the models available for --model on the chosen LLM backend."""
+    from cloud_pqc_migrator.remediation import AnthropicBackend, LLMBackendError, OllamaBackend
+
+    backend = (
+        AnthropicBackend() if llm_provider == "anthropic"
+        else OllamaBackend(model="", host=ollama_host)
+    )
+    try:
+        names = backend.list_models()
+    except LLMBackendError as exc:
+        console.print(f"[bold red]Error:[/] {exc}")
+        sys.exit(1)
+
+    table = Table(title=f"Available {llm_provider} models")
+    table.add_column("Model")
+    table.add_column("Default", justify="center")
+    for name in names:
+        is_default = llm_provider == "anthropic" and name == DEFAULT_ANTHROPIC_MODEL
+        table.add_row(name, "[green]✓[/]" if is_default else "")
+    console.print(table)
+    if not names:
+        hint = "ollama pull <model>" if llm_provider == "ollama" else "check your API key"
+        console.print(f"[yellow]No models found ({hint}).[/]")
 
 
 def _print_gap_summary(gaps: list) -> None:

@@ -28,7 +28,7 @@ def discovery_progress():
 
 
 @contextmanager
-def remediation_progress(total: int):
+def remediation_progress(total: int, label: str = "LLM"):
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold green]{task.description}"),
@@ -38,5 +38,5 @@ def remediation_progress(total: int):
         TimeElapsedColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Generating remediations via Claude API...", total=total)
+        task = progress.add_task(f"Generating remediations via {label}...", total=total)
         yield progress, task
