@@ -1,16 +1,6 @@
-import pytest
 from cloud_pqc_migrator.models import CloudProvider, TLSVersion, ResourceKind
 from cloud_pqc_migrator.auth.base import CredentialBundle
 from cloud_pqc_migrator.discovery import run_aws_discovery, run_gcp_discovery
-
-
-@pytest.fixture
-def mock_creds():
-    return CredentialBundle(
-        provider=CloudProvider.AWS,
-        env_vars={},
-        masked_display="test-mock",
-    )
 
 
 def test_aws_dry_run_returns_cbom(mock_creds):

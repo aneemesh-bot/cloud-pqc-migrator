@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import date
 from enum import Enum, IntEnum
-from typing import Optional
-
 from pydantic import BaseModel
 
 from .cbom import CryptoAsset
@@ -30,4 +28,4 @@ class Gap(BaseModel):
     fips_references: list[FIPSStandard]
     current_state: str
     target_state: str
-    t_start: Optional[date] = None
+    t_start: date | None = None

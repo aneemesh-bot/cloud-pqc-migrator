@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from typing import Any
+
+_CLI_TIMEOUT_SECONDS: int = int(os.environ.get("PQC_CLI_TIMEOUT", "60"))
 
 from cloud_pqc_migrator.auth.base import CredentialBundle
 from .mock_data import MOCK_RESPONSES
@@ -31,7 +34,12 @@ def run_cli_command(
     env["AWS_DEFAULT_OUTPUT"] = "json"
     env["CLOUDSDK_CORE_FORMAT"] = "json"
 
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd, env=env, capture_output=True, text=True, timeout=_CLI_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        raise CLICommandError(cmd, -1, f"Command timed out after {_CLI_TIMEOUT_SECONDS}s")
     if result.returncode != 0:
         raise CLICommandError(cmd, result.returncode, result.stderr)
 

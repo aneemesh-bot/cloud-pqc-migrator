@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 
@@ -37,13 +35,13 @@ class CryptoAsset(BaseModel):
     resource_id: str
     resource_kind: ResourceKind
     provider: CloudProvider
-    region: Optional[str] = None
-    project: Optional[str] = None
+    region: str | None = None
+    project: str | None = None
     min_tls_version: TLSVersion = TLSVersion.UNKNOWN
     cipher_suites: list[str] = Field(default_factory=list)
-    key_algorithm: Optional[str] = None
-    key_length_bits: Optional[int] = None
-    cert_expiry: Optional[datetime] = None
+    key_algorithm: str | None = None
+    key_length_bits: int | None = None
+    cert_expiry: datetime | None = None
     is_internet_facing: bool = False
     raw_api_response: dict = Field(default_factory=dict)
 
@@ -51,7 +49,7 @@ class CryptoAsset(BaseModel):
 class CBoM(BaseModel):
     scan_timestamp: datetime = Field(default_factory=lambda: datetime.now(tz=timezone.utc))
     provider: CloudProvider
-    account_id: Optional[str] = None
+    account_id: str | None = None
     dry_run: bool = False
     assets: list[CryptoAsset] = Field(default_factory=list)
     cli_commands_executed: list[str] = Field(default_factory=list)

@@ -5,8 +5,6 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional
-
 from cloud_pqc_migrator.models import CloudProvider
 
 
@@ -15,7 +13,7 @@ class CredentialBundle:
     provider: CloudProvider
     env_vars: dict[str, str] = field(default_factory=dict)
     masked_display: str = ""
-    expires_at: Optional[datetime] = None
+    expires_at: datetime | None = None
 
     def is_expired(self) -> bool:
         if self.expires_at is None:
@@ -49,10 +47,14 @@ class CredentialProvider(ABC):
 
 
 def run_subprocess(cmd: list[str], env: dict[str, str]) -> tuple[int, str, str]:
-    result = subprocess.run(
-        cmd,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return -1, "", f"Command timed out after 30s: {' '.join(cmd)}"
     return result.returncode, result.stdout, result.stderr

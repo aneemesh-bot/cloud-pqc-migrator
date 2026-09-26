@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
-
 from pydantic import BaseModel
 
 from .gap import Gap
@@ -22,9 +20,9 @@ class Remediation(BaseModel):
     gap: Gap
     cli_command: str
     rollback_command: str
-    iac_template: Optional[str] = None
+    iac_template: str | None = None
     forecasted_state: str
     status: RemediationStatus = RemediationStatus.PENDING
-    llm_reasoning: Optional[str] = None
-    execution_output: Optional[str] = None
-    health_check_passed: Optional[bool] = None
+    llm_reasoning: str | None = None
+    execution_output: str | None = None
+    health_check_passed: bool | None = None

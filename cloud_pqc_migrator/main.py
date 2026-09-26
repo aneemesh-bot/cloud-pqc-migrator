@@ -70,6 +70,20 @@ def cli() -> None:
     metavar="N",
     help="Cap the number of gaps sent to the LLM (useful for large environments).",
 )
+@click.option(
+    "--log-level",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
+    default="WARNING",
+    show_default=True,
+    help="Logging level for the audit trail.",
+)
+@click.option(
+    "--log-file",
+    type=click.Path(),
+    default=None,
+    metavar="PATH",
+    help="Write audit log to this file (default: disabled).",
+)
 def scan(
     provider: str,
     dry_run: bool,
@@ -78,8 +92,13 @@ def scan(
     t_cover_months: int,
     t_proj_months: int,
     max_remediations: int | None,
+    log_level: str,
+    log_file: str | None,
 ) -> None:
     """Full scan: authenticate → discover → triage → remediate → approve → execute."""
+    from cloud_pqc_migrator.logger import configure_logging, log
+    configure_logging(level=log_level, log_file=Path(log_file) if log_file else None)
+
     from cloud_pqc_migrator.auth import AWSCredentialProvider, GCPCredentialProvider
     from cloud_pqc_migrator.discovery import run_aws_discovery, run_gcp_discovery
     from cloud_pqc_migrator.triage import evaluate
@@ -88,6 +107,7 @@ def scan(
     from cloud_pqc_migrator.ui.progress import discovery_progress, remediation_progress
 
     cloud_provider = CloudProvider(provider)
+    log.info("scan_start provider=%s dry_run=%s", provider, dry_run)
 
     # ── API key pre-flight check ────────────────────────────────────────────
     has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
@@ -141,6 +161,7 @@ def scan(
 
         cbom = discover_fn(creds, dry_run=dry_run, progress_callback=on_step)
 
+    log.info("discovery_complete assets=%d commands=%d", len(cbom.assets), len(cbom.cli_commands_executed))
     console.print(
         f"[green]Discovery complete.[/] Found [bold]{len(cbom.assets)}[/] cryptographic assets "
         f"across [bold]{len(cbom.cli_commands_executed)}[/] CLI commands."
@@ -154,6 +175,7 @@ def scan(
     # ── Step 3: Triage ──────────────────────────────────────────────────────
     console.rule("[bold blue]Step 3 — PQC Compliance Triage[/]")
     gaps = evaluate(cbom, t_proj_months=t_proj_months)
+    log.info("triage_complete gaps=%d", len(gaps))
 
     _print_gap_summary(gaps)
 
@@ -170,6 +192,11 @@ def scan(
     gaps_to_remediate = gaps[:max_remediations] if max_remediations else gaps
 
     if len(gaps_to_remediate) < len(gaps):
+        log.warning(
+            "remediation_cap applied=%d deferred=%d",
+            len(gaps_to_remediate),
+            len(gaps) - len(gaps_to_remediate),
+        )
         console.print(
             f"[yellow]Capping at {max_remediations} remediations "
             f"({len(gaps) - len(gaps_to_remediate)} gaps deferred).[/]"
@@ -185,6 +212,7 @@ def scan(
     # ── Step 5: Approval Gate ───────────────────────────────────────────────
     console.rule("[bold blue]Step 5 — Human-in-the-Loop Approval Gate[/]")
     run_approval_gate(remediations, creds, dry_run=dry_run)
+    log.info("scan_complete")
 
 
 @cli.command("triage-only")

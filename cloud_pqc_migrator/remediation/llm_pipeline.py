@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Callable, Optional
+from typing import Callable
 
 import anthropic
 
@@ -10,7 +10,7 @@ from cloud_pqc_migrator.models import Gap, Remediation, RemediationStatus
 from .prompt_templates import SYSTEM_PROMPT, build_user_prompt
 from .validator import validate_remediation_output, RemediationValidationError
 
-_client: Optional[anthropic.Anthropic] = None
+_client: anthropic.Anthropic | None = None
 
 
 class MissingAPIKeyError(RuntimeError):
@@ -93,7 +93,7 @@ def generate_remediation(gap: Gap) -> Remediation:
 
 def generate_all_remediations(
     gaps: list[Gap],
-    progress_callback: Optional[Callable[[int, int], None]] = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[Remediation]:
     remediations: list[Remediation] = []
     for i, gap in enumerate(gaps):

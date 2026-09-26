@@ -159,6 +159,9 @@ Options:
   --t-cover-months INTEGER  Data sensitivity window in months for T_start.  [default: 24]
   --t-proj-months INTEGER   Estimated migration project duration in months.  [default: 6]
   --max-remediations N      Cap LLM calls per session (for large environments).
+  --log-level [DEBUG|INFO|WARNING|ERROR]
+                            Python logging level for the audit trail.  [default: WARNING]
+  --log-file PATH           Write the audit log to this file (default: disabled).
 ```
 
 **Example — export CBoM for later use:**
@@ -176,6 +179,14 @@ cloud-pqc-migrator scan --provider aws --dry-run \
 cloud-pqc-migrator scan --provider aws \
   --t-cover-months 36 \
   --t-proj-months 12
+```
+
+**Example — write a persistent audit log:**
+
+```bash
+cloud-pqc-migrator scan --provider aws --dry-run \
+  --log-level INFO \
+  --log-file audit-2026-05.log
 ```
 
 ---
@@ -411,14 +422,62 @@ Use `--max-remediations N` to cap API calls in very large environments while you
 
 ---
 
+## Logging & Audit Trail
+
+By default the tool is silent at the Python logging level (only the Rich terminal UI is shown). Pass `--log-level` and/or `--log-file` to the `scan` command to enable structured logging.
+
+### Log levels
+
+| Level | What is emitted |
+|---|---|
+| `ERROR` | Execution failures only |
+| `WARNING` | Rollback triggers, remediation cap hits, approval gate quits |
+| `INFO` | Scan start/end, discovery stats, triage counts, individual approvals/rejections, health check outcomes |
+| `DEBUG` | All of the above plus per-resource health check starts |
+
+### Log output
+
+Structured log lines are written to **stderr** so they never interleave with the Rich terminal UI on stdout. When `--log-file` is provided a separate file handler is attached; the file always captures at `DEBUG` level regardless of `--log-level`, giving you a complete audit trail on disk while keeping the terminal output focused.
+
+```
+2026-05-23T10:01:05Z INFO     cloud_pqc_migrator — scan_start provider=aws dry_run=True
+2026-05-23T10:01:06Z INFO     cloud_pqc_migrator — discovery_complete assets=9 commands=12
+2026-05-23T10:01:06Z INFO     cloud_pqc_migrator — triage_complete gaps=5
+2026-05-23T10:01:09Z INFO     cloud_pqc_migrator — remediation_approved id=4a3f... resource=arn:aws:...
+2026-05-23T10:01:10Z INFO     cloud_pqc_migrator — remediation_executed id=4a3f... resource=arn:aws:...
+2026-05-23T10:01:11Z INFO     cloud_pqc_migrator — remediation_rejected id=8b2c... resource=arn:aws:...
+2026-05-23T10:01:11Z INFO     cloud_pqc_migrator — scan_complete
+```
+
+### Audit log recipe
+
+```bash
+# Capture a full debug-level audit log to a dated file while keeping the
+# terminal output clean at WARNING level:
+cloud-pqc-migrator scan --provider aws \
+  --log-level WARNING \
+  --log-file "audit-$(date +%Y%m%d-%H%M%S).log"
+
+# Inspect what happened:
+grep "remediation_" audit-*.log
+```
+
+The environment variable `PQC_CLI_TIMEOUT` (default: `60`) controls how many seconds each cloud CLI call is allowed before it is aborted with an error. Raise it for large environments with many resources:
+
+```bash
+PQC_CLI_TIMEOUT=120 cloud-pqc-migrator scan --provider aws
+```
+
+---
+
 ## Running tests
 
 ```bash
-pip install pytest pytest-mock
+pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-All 28 tests run without cloud credentials or an Anthropic API key.
+All 32 tests run without cloud credentials or an Anthropic API key. The suite includes 4 integration tests that exercise the full discover→triage→remediate→execute pipeline using mock data and a mocked Anthropic client.
 
 ---
 
@@ -428,6 +487,7 @@ All 28 tests run without cloud credentials or an Anthropic API key.
 cloud-pqc-migrator/
 ├── cloud_pqc_migrator/
 │   ├── main.py                  # CLI entry point (Click)
+│   ├── logger.py                # Structured logging — configure_logging(), log singleton
 │   ├── auth/                    # Ephemeral credential providers
 │   ├── discovery/               # Cloud CLI executor + AWS/GCP discovery steps
 │   ├── triage/                  # PQC rule engine + timeline calculator
@@ -435,7 +495,8 @@ cloud-pqc-migrator/
 │   ├── execution/               # Approval gate + health check + rollback
 │   ├── models/                  # Pydantic data models (CBoM, Gap, Remediation)
 │   └── ui/                      # Rich terminal panels and progress bars
-├── tests/                       # Unit tests (28 tests, no cloud/API needed)
+├── tests/                       # 32 tests (unit + integration, no cloud/API needed)
+├── .github/workflows/ci.yml     # GitHub Actions — lint, typecheck, test (Py 3.11 + 3.12)
 ├── pyproject.toml
 └── requirements.txt
 ```

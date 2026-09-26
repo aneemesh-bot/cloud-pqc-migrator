@@ -1,4 +1,5 @@
 import pytest
+from cloud_pqc_migrator.auth.base import CredentialBundle
 from cloud_pqc_migrator.models import (
     CBoM, CryptoAsset, CloudProvider, TLSVersion, ResourceKind,
     Gap, Priority, FIPSStandard,
@@ -83,4 +84,25 @@ def sample_gap(alb_listener_tls12):
         fips_references=[FIPSStandard.FIPS_203],
         current_state="TLS 1.2 only",
         target_state="TLS 1.3 + ML-KEM",
+    )
+
+
+@pytest.fixture
+def mock_creds():
+    return CredentialBundle(
+        provider=CloudProvider.AWS,
+        env_vars={},
+        masked_display="[test]",
+    )
+
+
+@pytest.fixture
+def sample_remediation(sample_gap):
+    return Remediation(
+        remediation_id="test-id-001",
+        gap=sample_gap,
+        cli_command="aws elbv2 modify-listener --listener-arn arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/prod-alb/abc/def --ssl-policy ELBSecurityPolicy-TLS13-1-2-Ext2-2021-06 --output json",
+        rollback_command="aws elbv2 modify-listener --listener-arn arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/prod-alb/abc/def --ssl-policy ELBSecurityPolicy-2016-08 --output json",
+        forecasted_state="TLS 1.3 enforced",
+        llm_reasoning="Upgrades policy.",
     )

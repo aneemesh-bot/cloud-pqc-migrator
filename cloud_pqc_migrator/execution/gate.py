@@ -6,6 +6,7 @@ import subprocess
 import click
 
 from cloud_pqc_migrator.auth.base import CredentialBundle
+from cloud_pqc_migrator.logger import log
 from cloud_pqc_migrator.models import Remediation, RemediationStatus
 from cloud_pqc_migrator.ui.console import console
 from cloud_pqc_migrator.ui.panels import display_approval_panel, display_summary_table
@@ -19,7 +20,10 @@ def _execute_command(cmd_str: str, creds: CredentialBundle) -> tuple[bool, str]:
     except ValueError as exc:
         return False, str(exc)
     env = creds.build_env()
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False, "Timed out after 60s"
     output = result.stdout + result.stderr
     return result.returncode == 0, output
 
@@ -55,15 +59,18 @@ def run_approval_gate(
         choice = _prompt_choice()
 
         if choice == "quit":
+            log.warning("approval_gate_quit remaining=%d", total - i + 1)
             console.print("[bold red]Session aborted by user.[/]")
             break
 
         if choice == "skip":
+            log.info("remediation_rejected id=%s resource=%s", remediation.remediation_id, remediation.gap.asset.resource_id)
             remediation.status = RemediationStatus.REJECTED
             console.print("[dim]Skipped.[/]\n")
             continue
 
         # Approved
+        log.info("remediation_approved id=%s resource=%s", remediation.remediation_id, remediation.gap.asset.resource_id)
         remediation.status = RemediationStatus.APPROVED
         rollback_cmd = remediation.rollback_command  # loaded into local var before execution
 
@@ -80,6 +87,7 @@ def run_approval_gate(
         remediation.execution_output = output
 
         if not success:
+            log.error("execution_failed id=%s output=%s", remediation.remediation_id, output[:200])
             console.print(f"[bold red]Execution failed:[/]\n{output}")
             remediation.status = RemediationStatus.FAILED
             console.print()
@@ -90,10 +98,12 @@ def run_approval_gate(
         remediation.health_check_passed = healthy
 
         if not healthy:
+            log.warning("rollback_triggered id=%s resource=%s", remediation.remediation_id, remediation.gap.asset.resource_id)
             console.print("[bold red]Health check failed — initiating rollback...[/]")
             execute_rollback(rollback_cmd, creds)
             remediation.status = RemediationStatus.ROLLED_BACK
         else:
+            log.info("remediation_executed id=%s resource=%s", remediation.remediation_id, remediation.gap.asset.resource_id)
             remediation.status = RemediationStatus.EXECUTED
             console.print("[bold green]Health check passed. Change is live.[/]")
 

@@ -5,6 +5,7 @@ import subprocess
 import shlex
 
 from cloud_pqc_migrator.auth.base import CredentialBundle
+from cloud_pqc_migrator.logger import log
 from cloud_pqc_migrator.models import Remediation, ResourceKind, TLSVersion
 from cloud_pqc_migrator.ui.console import console
 
@@ -17,7 +18,10 @@ _TLS13_POLICY_NAMES = {
 
 
 def _run(cmd: list[str], env: dict) -> tuple[int, dict | str]:
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return -1, "Health check timed out after 60s"
     if result.returncode != 0:
         return result.returncode, result.stderr
     try:
@@ -35,6 +39,7 @@ def run_health_check(remediation: Remediation, creds: CredentialBundle) -> bool:
     env = creds.build_env()
     kind = asset.resource_kind
 
+    log.debug("health_check_start resource=%s kind=%s", asset.resource_id[-60:], kind.value)
     console.print(f"[dim]Running health check for {asset.resource_id[-60:]}...[/]")
 
     try:
@@ -50,7 +55,9 @@ def run_health_check(remediation: Remediation, creds: CredentialBundle) -> bool:
             for listener in listeners:
                 ssl_policy = listener.get("SslPolicy", "")
                 if ssl_policy in _TLS13_POLICY_NAMES:
+                    log.info("health_check_passed resource=%s", asset.resource_id[-60:])
                     return True
+            log.warning("health_check_failed resource=%s", asset.resource_id[-60:])
             return False
 
         elif kind == ResourceKind.CLOUDFRONT_DISTRIBUTION:
@@ -63,8 +70,14 @@ def run_health_check(remediation: Remediation, creds: CredentialBundle) -> bool:
                 return False
             try:
                 min_proto = data["DistributionConfig"]["ViewerCertificate"]["MinimumProtocolVersion"]  # type: ignore[index]
-                return "TLSv1.3" in min_proto or "TLSv1.2_2021" in min_proto
+                passed = "TLSv1.3" in min_proto or "TLSv1.2_2021" in min_proto
+                if passed:
+                    log.info("health_check_passed resource=%s", asset.resource_id[-60:])
+                else:
+                    log.warning("health_check_failed resource=%s", asset.resource_id[-60:])
+                return passed
             except (KeyError, TypeError):
+                log.warning("health_check_failed resource=%s", asset.resource_id[-60:])
                 return False
 
         elif kind == ResourceKind.GCP_SSL_POLICY:
@@ -76,13 +89,20 @@ def run_health_check(remediation: Remediation, creds: CredentialBundle) -> bool:
             if rc != 0:
                 return False
             min_tls = data.get("minTlsVersion", "") if isinstance(data, dict) else ""  # type: ignore[union-attr]
-            return min_tls == "TLS_1_3"
+            passed = min_tls == "TLS_1_3"
+            if passed:
+                log.info("health_check_passed resource=%s", asset.resource_id[-60:])
+            else:
+                log.warning("health_check_failed resource=%s", asset.resource_id[-60:])
+            return passed
 
         else:
             # Generic: if we got here without error, assume success
             console.print("[dim]No specific health check for this resource kind — assuming success.[/]")
+            log.info("health_check_passed resource=%s", asset.resource_id[-60:])
             return True
 
     except Exception as exc:
+        log.exception("health_check_error resource=%s", asset.resource_id[-60:])
         console.print(f"[bold red]Health check error:[/] {exc}")
         return False
